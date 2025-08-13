@@ -25,9 +25,9 @@ def create_project(
         for i, particle in enumerate(particle_data.itertuples()):
             shift_x = 0.0
             shift_y = 0.0
-            if hasattr(particle, "cisTEMShiftX"):
-                shift_x = particle.cisTEMShiftX
-                shift_y = particle.cisTEMShiftY
+            if hasattr(particle, "cisTEMXShift"):
+                shift_x = particle.cisTEMXShift
+                shift_y = particle.cisTEMYShift
             f.write("%7d%8.2f%8.2f%8.2f%10.2f%10.2f%8d%6d%9.1f%9.1f%8.2f%8.2f%10d%11.4f%8.2f%8.2f\n" % (
                 particle.cisTEMPositionInStack,
                 particle.cisTEMAnglePsi,

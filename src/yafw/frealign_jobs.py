@@ -111,3 +111,21 @@ def parse_job(project: FrealignProject, job: FrealignJob):
         round_results = [result for result in results if result.class_n == class_n]
         per_class_results.append(round_results)
     return per_class_results
+
+def get_particle_table(project: FrealignProject, job: FrealignJob, round:int, class_n:int):
+    """
+    Returns a list of particle names from the particle table file.
+    """
+    par_filename = job.path / f"{project.name}_{round}_r{class_n}.par"
+    if not par_filename.exists():
+        raise FileNotFoundError(f"Particle table file {par_filename} does not exist.")
+    particle_info = []
+    for line in reverse_readline(par_filename):
+        if line.startswith("C"):
+            continue
+        # Extract particle name from the line
+        info = line.split()
+        particle_info.append(info)
+    # Reverse the list to maintain original order
+    particle_info.reverse()
+    return particle_info

@@ -27,12 +27,13 @@ classifiers = [
 dependencies = [
   "typer",
   "pydantic>=2",
-  "pycistem",
   "starfile",
   "rich",
   "mrcfile",
   "matplotlib",
-  "pandas"
+  "pandas",
+  "torch",
+  "torch-fourier-rescale"
 ]
 
 [project.scripts]

@@ -1,7 +1,22 @@
 import typer
 from pathlib import Path
 from yafw.project_management import Context, Global
+import warnings
 app = typer.Typer()
+
+def _setup_interactive_backend():
+    """Try to set up an interactive matplotlib backend."""
+    import matplotlib
+    # Try different interactive backends in order of preference
+    backends = ['TkAgg', 'Qt5Agg', 'GTK3Agg', 'MacOSX', 'WXAgg']
+    for backend in backends:
+        try:
+            matplotlib.use(backend)
+            return
+        except (ImportError, ModuleNotFoundError):
+            continue
+    # If no interactive backend works, warn the user
+    warnings.warn("No interactive matplotlib backend available. Plots may not display correctly.")
 
 @app.command()
 def create_project(
@@ -73,26 +88,33 @@ def create_binned_stack(
     if ctx.obj is None:
         typer.echo("Please run in a FREALIGN project folder. Exiting.")
         raise typer.Exit(code=1)
-    
-    from pycistem.programs.resample import ResampleParameters, run
+
     import mrcfile
+    import torch
+    from torch_fourier_rescale import fourier_rescale_2d
     from yafw.project_management import FrealignBinnedStack
 
     with mrcfile.open(ctx.obj.project.stacks[0].filename, mode="r") as f:
         orig_size = f.header.nx
+        stack_data = torch.from_numpy(f.data.copy())
+
     bin_to = round(orig_size / bin)
     output_filename = ctx.obj.project.path / f"{ctx.obj.project.name}B{bin}.mrc"
     if output_filename.exists():
         typer.echo(f"{output_filename} already exists. Exiting.")
         raise typer.Exit(code=1)
-    par = ResampleParameters(
-        input_filename=str(ctx.obj.project.stacks[0].filename),
-        output_filename=str(output_filename),
-        new_x_size=bin_to,
-        new_y_size=bin_to,
-    )
+
     print(f"Creating binned stack {output_filename}")
-    run(par)
+    # Rescale the stack using Fourier methods
+    binned_stack, _ = fourier_rescale_2d(
+        stack_data,
+        target_shape=(bin_to, bin_to)
+    )
+
+    # Save binned stack
+    with mrcfile.new(output_filename, overwrite=False) as mrc:
+        mrc.set_data(binned_stack.numpy().astype('float32'))
+
     ctx.obj.project.stacks.append(FrealignBinnedStack(
         filename=output_filename,
         pixel_size_A=ctx.obj.project.stacks[0].pixel_size_A * (orig_size / bin_to)
@@ -268,6 +290,7 @@ def fsc_results(ctx: Context):
         raise typer.Exit(code=1)
     job_data = parse_job(ctx.obj.project, ctx.obj.job)
     #print(job_data[0][-1])
+    _setup_interactive_backend()
     import matplotlib.pyplot as plt
     import matplotlib.ticker as tick
     import numpy as np
@@ -342,6 +365,7 @@ def job_status(ctx: Context, until_round:int = -1):
         typer.echo("Please run in a FREALIGN job folder. Exiting.")
         raise typer.Exit(code=1)
     job_data = parse_job(ctx.obj.project, ctx.obj.job)
+    _setup_interactive_backend()
     import matplotlib.pyplot as plt
     for class_n in range(job_data[-1][until_round].class_n):
         data = job_data[class_n]

@@ -421,7 +421,7 @@ def class_occupancy(
         occupancies = np.zeros((num_classes, len(split_points)))
 
         for class_idx, round_data in enumerate(class_data):
-            par_file = ctx.obj.job.path / f"{ctx.obj.project.name}_{round_data.class_n}_r{actual_round}.par"
+            par_file = ctx.obj.job.path / f"{ctx.obj.project.name}_{actual_round}_r{round_data.class_n}.par"
             if par_file.exists():
                 # Read par file
                 df = pd.read_table(par_file, sep="\s+", comment="C", header=None)

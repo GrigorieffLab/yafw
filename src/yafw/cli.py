@@ -404,16 +404,12 @@ def class_occupancy(
     has_interactive = _setup_interactive_backend()
     import matplotlib.pyplot as plt
 
-    # Get the specified iteration - find the actual round number
-    if iteration == -1:
-        # Get the last round number for class 1
-        actual_round = job_data[0][-1].round
-    else:
-        actual_round = iteration
+    # job_data is a list of lists: job_data[class_n][round_idx]
+    num_classes = len(job_data)
 
-    # Find all classes for this round
-    class_data = [r for r in job_data if r.round == actual_round]
-    num_classes = len(class_data)
+    # Get data for all classes at the specified iteration
+    class_data = [class_rounds[iteration] for class_rounds in job_data]
+    actual_round = class_data[0].round
 
     # Parse group specification
     if groups:
@@ -429,22 +425,31 @@ def class_occupancy(
             if par_file.exists():
                 # Read par file
                 df = pd.read_table(par_file, sep="\s+", comment="C", header=None)
-                if len(df) > 0 and len(df.columns) > 11:
-                    # Column 11 (index 11) contains occupancy
-                    occs = df[11].values
+                if len(df) > 0:
+                    typer.echo(f"Class {round_data.class_n}: Read {len(df)} particles, {len(df.columns)} columns")
+                    # Column 11 (0-indexed) contains occupancy in FREALIGN par format
+                    if len(df.columns) > 11:
+                        occs = df[11].values
+                        typer.echo(f"  Occupancy range: {occs.min():.2f} - {occs.max():.2f}")
 
-                    # Calculate average occupancy for each group
-                    for group_idx in range(len(split_points)):
-                        if group_idx < len(split_points) - 1:
-                            start = split_points[group_idx]
-                            end = split_points[group_idx + 1]
-                            group_occs = occs[start:end]
-                        else:
-                            # Last group (remaining particles)
-                            start = split_points[group_idx]
-                            group_occs = occs[start:]
+                        # Calculate average occupancy for each group
+                        for group_idx in range(len(split_points)):
+                            if group_idx < len(split_points) - 1:
+                                start = split_points[group_idx]
+                                end = split_points[group_idx + 1]
+                                group_occs = occs[start:end]
+                            else:
+                                # Last group (remaining particles)
+                                start = split_points[group_idx]
+                                group_occs = occs[start:]
 
-                        occupancies[class_idx, group_idx] = np.mean(group_occs) if len(group_occs) > 0 else 0
+                            if len(group_occs) > 0:
+                                occupancies[class_idx, group_idx] = np.mean(group_occs)
+                                typer.echo(f"  Group {group_idx} ({len(group_occs)} particles): avg occ = {occupancies[class_idx, group_idx]:.2f}")
+                    else:
+                        typer.echo(f"  Warning: Not enough columns ({len(df.columns)})")
+            else:
+                typer.echo(f"Warning: Par file not found: {par_file}")
 
         # Create grouped bar plot
         x = np.arange(num_classes)

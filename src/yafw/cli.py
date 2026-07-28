@@ -5,18 +5,29 @@ import warnings
 app = typer.Typer()
 
 def _setup_interactive_backend():
-    """Try to set up an interactive matplotlib backend."""
+    """Try to set up an interactive matplotlib backend.
+
+    Returns:
+        bool: True if an interactive backend is available, False otherwise.
+    """
     import matplotlib
+    import matplotlib.pyplot as plt
+
     # Try different interactive backends in order of preference
     backends = ['TkAgg', 'Qt5Agg', 'GTK3Agg', 'MacOSX', 'WXAgg']
     for backend in backends:
         try:
             matplotlib.use(backend)
-            return
-        except (ImportError, ModuleNotFoundError):
+            # Test if the backend actually works by trying to get the current figure
+            plt.figure()
+            plt.close()
+            return True
+        except (ImportError, ModuleNotFoundError, Exception):
             continue
-    # If no interactive backend works, warn the user
-    warnings.warn("No interactive matplotlib backend available. Plots may not display correctly.")
+
+    # If no interactive backend works, use Agg (non-interactive)
+    matplotlib.use('Agg')
+    return False
 
 @app.command()
 def create_project(
@@ -127,6 +138,7 @@ def create_job(
     stack: Path = typer.Argument(..., help="The stack to use"),
     starting_parameters: str = typer.Argument("default", help="Path to the starting parameters file"),
     parameter_mask: str = typer.Option("0 0 0 0 0", help="Path to the mask file"),
+    focus_mask: str = typer.Option("", help="Focus mask as 4 floats (e.g., '10.0 20.0 30.0 40.0')"),
     nclasses: int = typer.Option(10, help="Number of classes to refine"),
     nprocessor_ref: int = typer.Option(10, help="Number of processors to use for refinement"),
     nprocessor_rec: int = typer.Option(10, help="Number of processors to use for reconstruction"),
@@ -153,6 +165,7 @@ def create_job(
     
     parameters = FrealignParameters(
         parameter_mask=parameter_mask,
+        focus_mask=focus_mask,
         nclasses=nclasses,
         nprocessor_ref=nprocessor_ref,
         nprocessor_rec=nprocessor_rec,
@@ -290,7 +303,7 @@ def fsc_results(ctx: Context):
         raise typer.Exit(code=1)
     job_data = parse_job(ctx.obj.project, ctx.obj.job)
     #print(job_data[0][-1])
-    _setup_interactive_backend()
+    has_interactive = _setup_interactive_backend()
     import matplotlib.pyplot as plt
     import matplotlib.ticker as tick
     import numpy as np
@@ -315,14 +328,14 @@ def fsc_results(ctx: Context):
         line = legend.get_lines()[index]
         line.set_visible(not line.get_visible())
         plt.draw()
-   
+
     fig = plt.figure()
     ax = fig.add_subplot(111)
     for i, class_list in enumerate(job_data):
         last_round = class_list[-1]
         number_values = len(last_round.FSC.resolution)
         ax.plot(range(number_values),last_round.FSC.fsc_values,label=f"Class {i+1}")
-        
+
         plt.xlim(number_values-1,0)
         plt.ylim(-0.01,1.05)
         def x_fmt(x, y):
@@ -336,7 +349,14 @@ def fsc_results(ctx: Context):
     legend = plt.legend()
     #plt.legend()
     plt.gcf().canvas.mpl_connect('pick_event', on_legend_click)
-    plt.show()
+
+    if has_interactive:
+        plt.show()
+    else:
+        output_file = Path.cwd() / "fsc_plot.png"
+        plt.savefig(output_file, dpi=150, bbox_inches='tight')
+        typer.echo(f"FSC plot saved to: {output_file}")
+        plt.close()
 
     fig2 = plt.figure()
     ax = fig2.add_subplot(111)
@@ -344,7 +364,7 @@ def fsc_results(ctx: Context):
         last_round = class_list[-1]
         number_values = len(last_round.FSC.resolution)
         ax.plot(range(number_values),last_round.FSC.part_fsc_values,label=f"Class {i+1}")
-        
+
         plt.xlim(number_values-1,0)
         plt.ylim(-0.01,1.05)
         def x_fmt(x, y):
@@ -356,7 +376,111 @@ def fsc_results(ctx: Context):
     plt.xlabel('Resolution (Å)')
     plt.ylabel('Part_FSC')
     plt.legend()
-    plt.show()  
+
+    if has_interactive:
+        plt.show()
+    else:
+        output_file = Path.cwd() / "part_fsc_plot.png"
+        plt.savefig(output_file, dpi=150, bbox_inches='tight')
+        typer.echo(f"Part_FSC plot saved to: {output_file}")
+        plt.close()  
+
+@app.command()
+def class_occupancy(
+    ctx: Context,
+    iteration: int = typer.Option(-1, help="Iteration number to plot (-1 for last)"),
+    groups: str = typer.Option("", help="Split particles into groups at specified points (e.g., '200:500:800')"),
+):
+    """Plot average occupancy of each class as a bar graph."""
+    from yafw.frealign_jobs import parse_job
+    import numpy as np
+    import pandas as pd
+
+    if ctx.obj is None or ctx.obj.job is None:
+        typer.echo("Please run in a FREALIGN job folder. Exiting.")
+        raise typer.Exit(code=1)
+
+    job_data = parse_job(ctx.obj.project, ctx.obj.job)
+    has_interactive = _setup_interactive_backend()
+    import matplotlib.pyplot as plt
+
+    # Get the specified iteration - find the actual round number
+    if iteration == -1:
+        # Get the last round number for class 1
+        actual_round = job_data[0][-1].round
+    else:
+        actual_round = iteration
+
+    # Find all classes for this round
+    class_data = [r for r in job_data if r.round == actual_round]
+    num_classes = len(class_data)
+
+    # Parse group specification
+    if groups:
+        split_points = [0] + [int(x) for x in groups.split(':')]
+        group_labels = [f"Ptcl {split_points[i]+1}-{split_points[i+1]}" for i in range(len(split_points)-1)]
+        group_labels.append(f"Ptcl {split_points[-1]+1}+")
+
+        # Read per-particle occupancies from par files
+        occupancies = np.zeros((num_classes, len(split_points)))
+
+        for class_idx, round_data in enumerate(class_data):
+            par_file = ctx.obj.job.path / f"{ctx.obj.project.name}_{round_data.class_n}_r{actual_round}.par"
+            if par_file.exists():
+                # Read par file
+                df = pd.read_table(par_file, sep="\s+", comment="C", header=None)
+                if len(df) > 0 and len(df.columns) > 11:
+                    # Column 11 (index 11) contains occupancy
+                    occs = df[11].values
+
+                    # Calculate average occupancy for each group
+                    for group_idx in range(len(split_points)):
+                        if group_idx < len(split_points) - 1:
+                            start = split_points[group_idx]
+                            end = split_points[group_idx + 1]
+                            group_occs = occs[start:end]
+                        else:
+                            # Last group (remaining particles)
+                            start = split_points[group_idx]
+                            group_occs = occs[start:]
+
+                        occupancies[class_idx, group_idx] = np.mean(group_occs) if len(group_occs) > 0 else 0
+
+        # Create grouped bar plot
+        x = np.arange(num_classes)
+        width = 0.8 / len(split_points)
+
+        plt.figure(figsize=(10, 6))
+        for group_idx in range(len(split_points)):
+            offset = width * (group_idx - len(split_points)/2 + 0.5)
+            plt.bar(x + offset, occupancies[:, group_idx], width, label=group_labels[group_idx])
+
+        plt.xlabel('Class')
+        plt.ylabel('Average Occupancy (%)')
+        plt.title(f'Class Occupancy by Particle Group (Round {actual_round})')
+        plt.xticks(x, [f'Class {i+1}' for i in range(num_classes)])
+        plt.legend()
+    else:
+        # Single bar per class - use pre-calculated average occupancy
+        occupancies = [r.avg_occ for r in class_data]
+
+        plt.figure(figsize=(10, 6))
+        x = np.arange(num_classes)
+        plt.bar(x, occupancies)
+        plt.xlabel('Class')
+        plt.ylabel('Average Occupancy (%)')
+        plt.title(f'Class Occupancy (Round {actual_round})')
+        plt.xticks(x, [f'Class {i+1}' for i in range(num_classes)])
+
+    plt.tight_layout()
+
+    if has_interactive:
+        plt.show()
+    else:
+        output_file = Path.cwd() / "class_occupancy.png"
+        plt.savefig(output_file, dpi=150, bbox_inches='tight')
+        typer.echo(f"Plot saved to: {output_file}")
+        plt.close()
 
 @app.command()
 def job_status(ctx: Context, until_round:int = -1):
@@ -365,13 +489,20 @@ def job_status(ctx: Context, until_round:int = -1):
         typer.echo("Please run in a FREALIGN job folder. Exiting.")
         raise typer.Exit(code=1)
     job_data = parse_job(ctx.obj.project, ctx.obj.job)
-    _setup_interactive_backend()
+    has_interactive = _setup_interactive_backend()
     import matplotlib.pyplot as plt
     for class_n in range(job_data[-1][until_round].class_n):
         data = job_data[class_n]
         plt.plot([d.round for d in data], [d.avg_occ for d in data], label=f"Class {class_n+1}")
     plt.legend()
-    plt.show()
+
+    if has_interactive:
+        plt.show()
+    else:
+        output_file = Path.cwd() / "job_status.png"
+        plt.savefig(output_file, dpi=150, bbox_inches='tight')
+        typer.echo(f"Plot saved to: {output_file}")
+        plt.close()
 
 @app.callback()
 def main(

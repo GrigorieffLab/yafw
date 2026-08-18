@@ -1,8 +1,14 @@
 import typer
 from pathlib import Path
 from yafw.project_management import Context, Global
+from yafw.__about__ import __version__
 import warnings
 app = typer.Typer()
+
+def version_callback(value: bool):
+    if value:
+        typer.echo(f"yafw version {__version__}")
+        raise typer.Exit()
 
 def _setup_interactive_backend():
     """Try to set up an interactive matplotlib backend.
@@ -44,6 +50,8 @@ def create_project(
     project_dir = Path.cwd() / name
     project_dir.mkdir()
     copy(mrcfilename, project_dir/f"{name}.mrc")
+    # Create B1 symlink to original stack
+    (project_dir / f"{name}B1.mrc").symlink_to(f"{name}.mrc")
 
     particle_data = starfile.read(starfilename)
 
@@ -102,12 +110,14 @@ def create_binned_stack(
 
     import mrcfile
     import torch
+    import numpy as np
     from torch_fourier_rescale import fourier_rescale_2d
     from yafw.project_management import FrealignBinnedStack
 
+    # Get stack dimensions
     with mrcfile.open(ctx.obj.project.stacks[0].filename, mode="r") as f:
         orig_size = f.header.nx
-        stack_data = torch.from_numpy(f.data.copy())
+        num_images = f.data.shape[0]
 
     bin_to = round(orig_size / bin)
     output_filename = ctx.obj.project.path / f"{ctx.obj.project.name}B{bin}.mrc"
@@ -116,15 +126,37 @@ def create_binned_stack(
         raise typer.Exit(code=1)
 
     print(f"Creating binned stack {output_filename}")
-    # Rescale the stack using Fourier methods
-    binned_stack, _ = fourier_rescale_2d(
-        stack_data,
-        target_shape=(bin_to, bin_to)
-    )
 
-    # Save binned stack
+    # Process stack in batches to reduce memory usage
+    batch_size = 500  # Process 500 images at a time
+    binned_images = []
+
+    with mrcfile.open(ctx.obj.project.stacks[0].filename, mode="r") as f:
+        for batch_start in range(0, num_images, batch_size):
+            batch_end = min(batch_start + batch_size, num_images)
+            print(f"Processing images {batch_start+1} to {batch_end} of {num_images}")
+
+            # Load batch
+            batch_data = torch.from_numpy(f.data[batch_start:batch_end].copy())
+
+            # Rescale the batch using Fourier methods
+            binned_batch, _ = fourier_rescale_2d(
+                batch_data,
+                target_shape=(bin_to, bin_to)
+            )
+
+            binned_images.append(binned_batch.numpy().astype('float32'))
+
+            # Clear memory
+            del batch_data, binned_batch
+
+    # Combine all batches and save
+    binned_stack = np.concatenate(binned_images, axis=0)
     with mrcfile.new(output_filename, overwrite=False) as mrc:
-        mrc.set_data(binned_stack.numpy().astype('float32'))
+        mrc.set_data(binned_stack)
+
+    # Clear memory
+    del binned_images, binned_stack
 
     ctx.obj.project.stacks.append(FrealignBinnedStack(
         filename=output_filename,
@@ -512,6 +544,7 @@ def job_status(ctx: Context, until_round:int = -1):
 @app.callback()
 def main(
     ctx: Context,
+    version: bool = typer.Option(None, "--version", callback=version_callback, is_eager=True, help="Show version and exit"),
 ):
     from yafw.project_management import FrealignProject, FrealignJob
     if (Path.cwd() / f"{Path.cwd().name}.json").exists():
